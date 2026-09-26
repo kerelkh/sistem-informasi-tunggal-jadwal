@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-situng}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-situng}
+      POSTGRES_DB: ${POSTGRES_DB:-situng}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-situng} -d ${POSTGRES_DB:-situng}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-situng}:${POSTGRES_PASSWORD:-situng}@db:5432/${POSTGRES_DB:-situng}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-change-me-32-bytes-minimum}
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+      APP_NAME: ${APP_NAME:-SITUNG API}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-4100}:4000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:4000/api/v1/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      API_BASE: http://backend:4000/api/v1
+      PUBLIC_APP_NAME: ${PUBLIC_APP_NAME:-SITUNG}
+      PUBLIC_APP_TAGLINE: ${PUBLIC_APP_TAGLINE:-Sistem Informasi Tunggal Jadwal}
+      ORIGIN: ${ORIGIN:-http://localhost:3100}
+      PORT: 3000
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3100}:3000"
+
+volumes:
+  pgdata:
