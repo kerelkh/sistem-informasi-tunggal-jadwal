@@ -5,3 +5,6 @@ node_modules/
 !.env.test
 .DS_Store
 Thumbs.db
+
+# Local working documents — kept out of the repository.
+docs/
