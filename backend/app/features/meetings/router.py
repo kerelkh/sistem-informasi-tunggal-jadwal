@@ -10,6 +10,7 @@ from app.features.auth.models import User
 from app.features.meetings.crud import (
 	InviteConflictError,
 	MeetingValidationError,
+	ScheduleConflictError,
 	build_meeting_read,
 	cancel_meeting,
 	count_pending_invitations,
@@ -59,7 +60,7 @@ def _load_as_organizer(session: Session, meeting_id: int, user: User) -> tuple[M
 
 
 def _bad_request(exc: Exception) -> HTTPException:
-	code = status.HTTP_409_CONFLICT if isinstance(exc, InviteConflictError) else status.HTTP_400_BAD_REQUEST
+	code = status.HTTP_409_CONFLICT if isinstance(exc, (InviteConflictError, ScheduleConflictError)) else status.HTTP_400_BAD_REQUEST
 	return HTTPException(status_code=code, detail=str(exc))
 
 
@@ -113,7 +114,7 @@ def add_meeting(
 ) -> MeetingRead:
 	try:
 		meeting = create_meeting(session, meeting_in, current_user)
-	except (MeetingValidationError, InviteConflictError) as exc:
+	except (MeetingValidationError, InviteConflictError, ScheduleConflictError) as exc:
 		raise _bad_request(exc) from exc
 	return build_meeting_read(session, meeting, get_participation(session, meeting.id, current_user.id))
 
@@ -128,7 +129,7 @@ def edit_meeting(
 	meeting, me = _load_as_organizer(session, meeting_id, current_user)
 	try:
 		meeting = update_meeting(session, meeting, me, meeting_in)
-	except MeetingValidationError as exc:
+	except (MeetingValidationError, InviteConflictError, ScheduleConflictError) as exc:
 		raise _bad_request(exc) from exc
 	session.refresh(me)
 	return build_meeting_read(session, meeting, me)

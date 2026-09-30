@@ -1,11 +1,12 @@
 from collections import Counter
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlmodel import Session, delete, select
 
 from app.core.time import utcnow
 from app.features.auth.models import User
-from app.features.availability.service import blocking_user_ids
+from app.features.availability.service import blocking_user_ids, find_overlaps
 from app.features.meetings.models import (
 	Meeting,
 	MeetingLocationType,
@@ -51,6 +52,10 @@ class MeetingValidationError(ValueError):
 
 class InviteConflictError(ValueError):
 	"""Raised when someone being invited already has a formal meeting in that slot."""
+
+
+class ScheduleConflictError(ValueError):
+	"""Raised when the organizer's own calendar already has a formal meeting in that slot."""
 
 
 def validate_meeting(meeting: Meeting) -> None:
@@ -258,6 +263,59 @@ def _check_invitees(session: Session, meeting: Meeting, organizer_id: int, user_
 	return users
 
 
+def _format_slot(meeting: Meeting, tz: str) -> str:
+	"""The meeting's scheduled time on the organizer's clock, e.g. "01/10/2026 09:00–11:00"."""
+	zone = ZoneInfo(tz)
+	start = meeting.scheduled_start.astimezone(zone)
+	if not meeting.scheduled_end:
+		return f"{start:%d/%m/%Y %H:%M}–selesai"
+	end = meeting.scheduled_end.astimezone(zone)
+	return f"{start:%d/%m/%Y %H:%M}–{end:%H:%M}" if end.date() == start.date() else f"{start:%d/%m/%Y %H:%M}–{end:%d/%m/%Y %H:%M}"
+
+
+def _check_organizer_free(session: Session, meeting: Meeting, organizer_id: int) -> None:
+	"""A formal meeting can't land on a slot the organizer already committed to — a
+	formal meeting they run, or a formal invitation they accepted. Informal meetings
+	and unanswered invitations don't count, same as for invitees."""
+	if not meeting.is_formal:
+		return
+	overlaps = find_overlaps(
+		session,
+		[organizer_id],
+		meeting.scheduled_start,
+		meeting.scheduled_end,
+		tz=meeting.timezone,
+		exclude_meeting_id=meeting.id,
+	).get(organizer_id, [])
+	clashes = [o.meeting for o in overlaps if o.blocking]
+	if clashes:
+		listed = "; ".join(f"\"{m.title}\" ({_format_slot(m, meeting.timezone)})" for m in clashes)
+		raise ScheduleConflictError(
+			f"Jadwal bertabrakan dengan rapat formal Anda: {listed}. Silakan pilih waktu lain."
+		)
+
+
+def _check_active_invitees_free(session: Session, meeting: Meeting) -> None:
+	"""On reschedule: everyone still invited must be free at the new time, outside this
+	meeting. Same rule as when inviting them."""
+	invitee_ids = [
+		p.user_id
+		for p in _participants(session, meeting.id)
+		if p.role == ParticipantRole.invitee and p.status in ACTIVE_STATUSES
+	]
+	busy = blocking_user_ids(
+		session,
+		invitee_ids,
+		meeting.scheduled_start,
+		meeting.scheduled_end,
+		tz=meeting.timezone,
+		exclude_meeting_id=meeting.id,
+	)
+	if busy:
+		names = ", ".join(sorted(display_name(u) for u in user_briefs(session, list(busy)).values()))
+		raise InviteConflictError(f"Peserta tidak tersedia pada waktu tersebut: {names}.")
+
+
 def _stage_invites(session: Session, meeting: Meeting, organizer: User, users: list[User]) -> int:
 	"""Adds (or re-opens) invitations without committing. Returns how many were sent.
 
@@ -418,8 +476,9 @@ def create_meeting(session: Session, meeting_in: MeetingCreate, organizer: User)
 	)
 	validate_pay(me)
 
-	# Check invitees before writing anything, so a clash doesn't leave behind a
-	# half-created meeting.
+	# Check the organizer and invitees before writing anything, so a clash doesn't
+	# leave behind a half-created meeting.
+	_check_organizer_free(session, meeting, organizer.id)
 	invitees = (
 		_check_invitees(session, meeting, organizer.id, meeting_in.invitee_ids)
 		if meeting_in.invitee_ids
@@ -443,15 +502,25 @@ def update_meeting(
 	pay = {k: data.pop(k) for k in PAY_FIELDS if k in data}
 
 	before = {f: getattr(meeting, f) for f in MATERIAL_FIELDS}
+	before_slot = {f: getattr(meeting, f) for f in ("scheduled_start", "scheduled_end", "is_formal")}
 	for key, value in data.items():
 		setattr(meeting, key, value)
 	for key, value in pay.items():
 		setattr(me, key, value)
 
+	# Only a change of slot (or becoming formal) can create a clash — editing the notes
+	# of a meeting shouldn't trip over one that was already there.
+	rescheduled = any(
+		getattr(meeting, f) != before_slot[f] for f in ("scheduled_start", "scheduled_end", "is_formal")
+	)
+
 	try:
 		validate_meeting(meeting)
 		validate_pay(me)
-	except MeetingValidationError:
+		if rescheduled and meeting.status == MeetingStatus.scheduled:
+			_check_organizer_free(session, meeting, meeting.organizer_id)
+			_check_active_invitees_free(session, meeting)
+	except (MeetingValidationError, ScheduleConflictError, InviteConflictError):
 		# Both objects are attached to the session and already mutated — drop the
 		# changes so a rejected update can't leak into any later flush.
 		session.rollback()

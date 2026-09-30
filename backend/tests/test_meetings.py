@@ -210,8 +210,9 @@ def test_times_are_utc_instants(client: TestClient, make_user):
 	m = create(client, ani)
 	assert m["scheduled_start"] == "2026-10-01T02:00:00Z"
 	assert m["timezone"] == "Asia/Jakarta"
-	# The same instant written from another zone is the same meeting time.
-	m = create(client, ani, scheduled_start="2026-10-01T11:00:00+09:00", scheduled_end=None)
+	# The same instant written from another zone is the same meeting time. (Informal,
+	# so it may share the slot with the first one.)
+	m = create(client, ani, scheduled_start="2026-10-01T11:00:00+09:00", scheduled_end=None, is_formal=False)
 	assert m["scheduled_start"] == "2026-10-01T02:00:00Z"
 	assert m["created_at"].endswith("Z")
 
@@ -271,3 +272,48 @@ def test_validation_errors_are_indonesian(client: TestClient, make_user):
 	assert res.json() == {"detail": "Judul: wajib diisi."}
 	res = client.post("/api/v1/meetings", json={**MEETING, "scheduled_end": "2026-10-01T08:00+07:00"}, headers=ani)
 	assert res.json()["detail"] == "Waktu selesai jadwal tidak boleh sebelum waktu mulai jadwal."
+
+
+def test_formal_meeting_cannot_clash_with_own_schedule(client: TestClient, make_user):
+	ani_id, ani = make_user("Ani")
+	_, budi = make_user("Budi")
+	create(client, ani, title="Rapat milik Ani")
+
+	# Clashes with a formal meeting Ani organises
+	res = client.post("/api/v1/meetings", json={**MEETING, "scheduled_start": "2026-10-01T10:00+07:00", "scheduled_end": "2026-10-01T12:00+07:00"}, headers=ani)
+	assert res.status_code == 409
+	assert "Rapat milik Ani" in res.json()["detail"] and "01/10/2026 09:00–11:00" in res.json()["detail"]
+	assert len(client.get("/api/v1/meetings", headers=ani).json()) == 1
+
+	# An informal meeting may share the slot; back-to-back is fine
+	create(client, ani, is_formal=False)
+	create(client, ani, scheduled_start="2026-10-01T11:00+07:00", scheduled_end="2026-10-01T12:00+07:00")
+
+	# A pending invitation doesn't block; an accepted one does
+	m = create(client, budi, title="Undangan Budi", scheduled_start="2026-10-02T09:00+07:00", scheduled_end="2026-10-02T10:00+07:00", invitee_ids=[ani_id])
+	create(client, ani, title="Masih boleh", scheduled_start="2026-10-02T09:30+07:00", scheduled_end="2026-10-02T10:30+07:00")
+	res = client.post(f"/api/v1/meetings/{m['id']}/respond", json={"action": "accept"}, headers=ani)
+	assert res.status_code == 200
+	res = client.post("/api/v1/meetings", json={**MEETING, "scheduled_start": "2026-10-02T09:00+07:00", "scheduled_end": "2026-10-02T09:30+07:00"}, headers=ani)
+	assert res.status_code == 409 and "Undangan Budi" in res.json()["detail"]
+
+
+def test_edit_cannot_move_into_a_clash(client: TestClient, make_user):
+	_, ani = make_user("Ani")
+	budi_id, budi = make_user("Budi")
+	create(client, ani, title="Pagi")
+	m = create(client, ani, title="Siang", scheduled_start="2026-10-01T13:00+07:00", scheduled_end="2026-10-01T14:00+07:00", invitee_ids=[budi_id])
+
+	# Organizer clash
+	res = client.put(f"/api/v1/meetings/{m['id']}", json={"scheduled_start": "2026-10-01T10:00+07:00", "scheduled_end": "2026-10-01T11:30+07:00"}, headers=ani)
+	assert res.status_code == 409 and "Pagi" in res.json()["detail"]
+	assert client.get(f"/api/v1/meetings/{m['id']}", headers=ani).json()["scheduled_start"].startswith("2026-10-01T06:00")
+
+	# Invitee clash
+	create(client, budi, title="Rapat Budi", scheduled_start="2026-10-01T15:00+07:00", scheduled_end="2026-10-01T16:00+07:00")
+	res = client.put(f"/api/v1/meetings/{m['id']}", json={"scheduled_start": "2026-10-01T15:00+07:00", "scheduled_end": "2026-10-01T16:00+07:00"}, headers=ani)
+	assert res.status_code == 409 and "Budi" in res.json()["detail"]
+
+	# Moving within its own slot, or editing other fields, is fine
+	res = client.put(f"/api/v1/meetings/{m['id']}", json={"scheduled_end": "2026-10-01T14:30+07:00", "title": "Siang (diperpanjang)"}, headers=ani)
+	assert res.status_code == 200, res.text
