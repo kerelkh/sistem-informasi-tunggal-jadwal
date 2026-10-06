@@ -7,6 +7,18 @@ export function authHeaders(token: string | undefined): Record<string, string> {
 	return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/**
+ * Tells the backend who the visitor is. Every call reaches it from this server, so
+ * without this its login rate limit would count all users as one.
+ */
+export function clientHeaders(getClientAddress: () => string): Record<string, string> {
+	try {
+		return { 'X-Forwarded-For': getClientAddress() };
+	} catch {
+		return {};
+	}
+}
+
 /** GETs a JSON resource, falling back when the backend says no rather than throwing. */
 export async function getJson<T>(
 	fetch: typeof globalThis.fetch,

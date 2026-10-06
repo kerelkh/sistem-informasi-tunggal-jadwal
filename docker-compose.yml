@@ -4,7 +4,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-situng}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-situng}
+      # No fallbacks for secrets: a missing value stops the deploy instead of
+      # quietly running with a password everyone can read in this file.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
       POSTGRES_DB: ${POSTGRES_DB:-situng}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -18,16 +20,19 @@ services:
     build: ./backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-situng}:${POSTGRES_PASSWORD:-situng}@db:5432/${POSTGRES_DB:-situng}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-change-me-32-bytes-minimum}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-situng}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:-situng}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?}
       JWT_ALGORITHM: HS256
       ACCESS_TOKEN_EXPIRE_MINUTES: 1440
       APP_NAME: ${APP_NAME:-SITUNG API}
     depends_on:
       db:
         condition: service_healthy
+    # Loopback only: reachable for scripts/seed-demo.sh on this machine, never from
+    # outside. The browser talks to the frontend, which reaches this over the
+    # compose network. The backend trusts X-Forwarded-For, so it must stay private.
     ports:
-      - "${BACKEND_PORT:-4100}:4000"
+      - "127.0.0.1:${BACKEND_PORT:-4100}:4000"
     healthcheck:
       test:
         [
@@ -49,12 +54,18 @@ services:
       PUBLIC_APP_NAME: ${PUBLIC_APP_NAME:-SITUNG}
       PUBLIC_APP_TAGLINE: ${PUBLIC_APP_TAGLINE:-Sistem Informasi Tunggal Jadwal}
       ORIGIN: ${ORIGIN:-http://localhost:3100}
+      # Behind a reverse proxy (Coolify/Traefik) set ADDRESS_HEADER=X-Forwarded-For so
+      # the login rate limit sees each visitor's IP rather than the proxy's.
+      ADDRESS_HEADER: ${ADDRESS_HEADER:-}
+      XFF_DEPTH: ${XFF_DEPTH:-1}
       PORT: 3000
     depends_on:
       backend:
         condition: service_healthy
+    # Loopback only, for local use. In production the reverse proxy serves the app
+    # over HTTPS on the domain; this port isn't reachable from outside.
     ports:
-      - "${FRONTEND_PORT:-3100}:3000"
+      - "127.0.0.1:${FRONTEND_PORT:-3100}:3000"
 
 volumes:
   pgdata:

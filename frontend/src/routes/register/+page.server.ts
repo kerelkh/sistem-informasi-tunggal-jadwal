@@ -1,9 +1,9 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { API_BASE } from '$lib/server/api';
+import { API_BASE, clientHeaders } from '$lib/server/api';
 import type { Actions } from './$types';
 
 export const actions: Actions = {
-	default: async ({ request, cookies, fetch }) => {
+	default: async ({ request, cookies, fetch, getClientAddress }) => {
 		const data = await request.formData();
 		const fullName = String(data.get('full_name') ?? '').trim();
 		const email = String(data.get('email') ?? '').trim();
@@ -22,7 +22,7 @@ export const actions: Actions = {
 
 		const res = await fetch(`${API_BASE}/auth/register`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', ...clientHeaders(getClientAddress) },
 			body: JSON.stringify({ email, password, full_name: fullName })
 		});
 
@@ -34,7 +34,7 @@ export const actions: Actions = {
 
 		const loginRes = await fetch(`${API_BASE}/auth/login`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', ...clientHeaders(getClientAddress) },
 			body: JSON.stringify({ email, password })
 		});
 		if (!loginRes.ok) redirect(303, '/login');

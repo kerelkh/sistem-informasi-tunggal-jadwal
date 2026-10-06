@@ -21,6 +21,20 @@ docker compose up --build
 Open http://localhost:3100. On a fresh database you're sent to a one-time setup page that
 creates the **first administrator**. After that there is no self-registration.
 
+`POSTGRES_PASSWORD` and `JWT_SECRET_KEY` are required; compose won't start without them.
+Both ports are bound to 127.0.0.1, so nothing is reachable from other machines.
+
+### Deploying on Coolify
+
+Create a **Docker Compose** resource from this repository, then:
+
+1. Set the environment variables: `POSTGRES_PASSWORD`, `JWT_SECRET_KEY` (`openssl rand -hex 32`),
+   `ORIGIN=https://<your domain>` and `ADDRESS_HEADER=X-Forwarded-For`.
+2. Give the **frontend** service your domain on port 3000. The backend and database get no domain.
+3. Deploy, open the domain straight away and create the first administrator. Until
+   someone does, whoever opens the site first gets that account.
+4. Turn on scheduled backups for the `db` service.
+
 ## Roles
 
 | | Administrator | User |
